@@ -30,6 +30,10 @@ class _BottomBarState extends State<BottomBar> {
           label: "Editor",
         ),
         BottomNavigationBarItem(
+          icon: Icon(MightierIcons.sliders),
+          label: "QSwitch",
+        ),
+        BottomNavigationBarItem(
           icon: Icon(Icons.list),
           label: "Presets",
         ),
