@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../bluetooth/devices/NuxDevice.dart';
 import 'package:mighty_plug_manager/bluetooth/NuxDeviceControl.dart';
 import 'package:mighty_plug_manager/audio/setlist_player/setlistPlayerState.dart';
+import '../../../bluetooth/devices/presets/Preset.dart';
 
 class QuickSwitch extends StatefulWidget {
   const QuickSwitch({super.key});
@@ -12,18 +13,23 @@ class QuickSwitch extends StatefulWidget {
 
 class _QuickSwitchState extends State<QuickSwitch> {
   late NuxDevice device;
+  late List<Preset> _presets;
+
+  static int _storedGridCount = 3;
+  static List<int> _storedAssignedChannels = [1, 2, 3];
 
   int _gridCount = 4; // number of buttons (2–4)
-  List<int> _assignedChannels = [1, 2, 3, 4]; // channel mapping per button
-  int? _selectedChannel; // which button is currently active
+  List<int> _assignedChannels = [1, 2, 3]; // channel mapping per button
 
   @override
   void initState() {
     super.initState();
+    _restoreState();
     device = NuxDeviceControl.instance().device;
     device.addListener(onDeviceDataChanged);
     NuxDeviceControl.instance().addListener(onDeviceChanged);
     SetlistPlayerState.instance().addListener(onJamTracksStateChange);
+    _presets = device.getPresetsList();
   }
 
   @override
@@ -48,14 +54,20 @@ class _QuickSwitchState extends State<QuickSwitch> {
 
   // --- change channel on amp ---
   void _switchChannel(BuildContext context, int channel) async {
-    if (device.selectedChannel == channel) return;
-    device.setSelectedChannel(channel,
+    final targetChannelIndex = channel - 1;
+    if (targetChannelIndex < 0 || targetChannelIndex >= device.channelsCount) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Selected channel is not available on this device'),
+          duration: Duration(milliseconds: 800)));
+      return;
+    }
+
+    if (device.selectedChannel == targetChannelIndex) return;
+    device.setSelectedChannel(targetChannelIndex,
         notifyBT: true, sendFullPreset: false, notifyUI: true);
     device.getPreset(device.selectedChannel).setupPresetFromNuxData();
 
-    setState(() {
-      _selectedChannel = channel;
-    });
+    setState(() {});
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Switched to channel $channel'),
@@ -87,11 +99,14 @@ class _QuickSwitchState extends State<QuickSwitch> {
       setState(() {
         _assignedChannels[index] = selected;
       });
+      _persistState();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final orientation = MediaQuery.of(context).orientation;
+    final isPortrait = orientation == Orientation.portrait;
     return Scaffold(
       appBar: AppBar(title: const Text('Quick Channel Switch')),
       body: Column(
@@ -103,39 +118,59 @@ class _QuickSwitchState extends State<QuickSwitch> {
                 final totalHeight = constraints.maxHeight;
                 final buttonHeight = totalHeight / _gridCount;
 
-                return Column(
+                final isLandscape = !isPortrait;
+                const buttonPadding =
+                    EdgeInsets.symmetric(horizontal: 8, vertical: 4);
+
+                return Flex(
+                  direction: isPortrait ? Axis.vertical : Axis.horizontal,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: List.generate(_gridCount, (index) {
                     final channel = _assignedChannels[index];
-                    final isActive = _selectedChannel == channel;
+                    final presetIndex = channel - 1;
+                    final isActive = device.selectedChannel == presetIndex;
+                    final presetColor =
+                        (presetIndex >= 0 && presetIndex < _presets.length)
+                            ? _presets[presetIndex].channelColor
+                            : Colors.grey.shade400;
+
+                    final button = GestureDetector(
+                      onDoubleTap: () => _showChannelPicker(context, index),
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              isActive ? presetColor : Colors.grey.shade400,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        onPressed: () => _switchChannel(context, channel),
+                        child: Text(
+                          'Channel $channel',
+                          style: const TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    );
+
+                    if (isLandscape) {
+                      return Expanded(
+                        child: Padding(
+                          padding: buttonPadding,
+                          child: SizedBox.expand(child: button),
+                        ),
+                      );
+                    }
 
                     return SizedBox(
                       height: buttonHeight,
                       width: double.infinity,
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                        child: GestureDetector(
-                          onLongPress: () => _showChannelPicker(context, index),
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor:
-                                  isActive ? Colors.blue : Colors.grey.shade400,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                            ),
-                            onPressed: () => _switchChannel(context, channel),
-                            child: Text(
-                              'Channel $channel',
-                              style: const TextStyle(
-                                fontSize: 28,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ),
+                        padding: buttonPadding,
+                        child: button,
                       ),
                     );
                   }),
@@ -144,17 +179,18 @@ class _QuickSwitchState extends State<QuickSwitch> {
             ),
           ),
           // --- +/- buttons at bottom ---
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 36),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildActionButton('-', _decreaseGrid),
-                const SizedBox(width: 16),
-                _buildActionButton('+', _increaseGrid),
-              ],
+          if (isPortrait)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 36),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildActionButton('-', _decreaseGrid),
+                  const SizedBox(width: 16),
+                  _buildActionButton('+', _increaseGrid),
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -174,11 +210,12 @@ class _QuickSwitchState extends State<QuickSwitch> {
   }
 
   void _increaseGrid() {
-    if (_gridCount >= 4) return;
+    if (_gridCount >= 3) return;
     setState(() {
       _gridCount++;
-      _assignedChannels.add(_gridCount);
+      _assignedChannels.add(_nextAvailableChannel());
     });
+    _persistState();
   }
 
   void _decreaseGrid() {
@@ -187,5 +224,39 @@ class _QuickSwitchState extends State<QuickSwitch> {
       _gridCount--;
       _assignedChannels.removeLast();
     });
+    _persistState();
+  }
+
+  void _restoreState() {
+    _gridCount = _storedGridCount.clamp(2, 3);
+    _assignedChannels = List<int>.from(_storedAssignedChannels);
+    _syncAssignedChannelsWithGrid();
+    _persistState();
+  }
+
+  void _persistState() {
+    _storedGridCount = _gridCount;
+    _storedAssignedChannels = List<int>.from(_assignedChannels);
+  }
+
+  void _syncAssignedChannelsWithGrid() {
+    if (_assignedChannels.length > _gridCount) {
+      _assignedChannels = _assignedChannels.sublist(0, _gridCount);
+    } else {
+      while (_assignedChannels.length < _gridCount) {
+        _assignedChannels.add(_nextAvailableChannel());
+      }
+    }
+  }
+
+  int _nextAvailableChannel() {
+    const maxChannel = 7;
+    final used = _assignedChannels.toSet();
+    for (var ch = 1; ch <= maxChannel; ch++) {
+      if (!used.contains(ch)) {
+        return ch;
+      }
+    }
+    return _assignedChannels.isEmpty ? 1 : _assignedChannels.last;
   }
 }
